@@ -32,7 +32,8 @@ def get_route():
 
     headers = {
         'Authorization': api_key,
-        'Content-Type': 'application/json'
+        'Accept': 'application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8',
+        'Content-Type': 'application/json; charset=utf-8'
     }
     
     # This endpoint returns the simple polyline string we need
