@@ -32,7 +32,7 @@ def get_route():
 
     headers = {
         'Authorization': api_key,
-        'Content-Type': 'application/json; charset=utf-8'
+        'Content-Type': 'application/json'
     }
     
     # This endpoint returns the simple polyline string we need
