@@ -45,7 +45,6 @@ def get_route():
             return jsonify({"error": "Could not extract polyline"}), 500
 
         return jsonify({"polyline": polyline, "risk_score": 0.3})
-
     except requests.exceptions.RequestException as e:
         return jsonify({"error": f"API request failed: {e}"}), 502
     except Exception as e:
