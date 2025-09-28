@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import requests
 import os
 from dotenv import load_dotenv
+import math
 
 load_dotenv()
 app = Flask(__name__)
@@ -21,6 +22,42 @@ def encode_polyline(coords):
             result.append(chr(v + 63))
         prev_lat, prev_lng = lat_e5, lng_e5
     return "".join(result)
+
+# --- Helper Function to Calculate Risk Score ---
+def calculate_risk_score(route):
+    # Extract distance and duration from route summary
+    distance = route.get("properties", {}).get("segments", [{}])[0].get("distance", 0)
+    duration = route.get("properties", {}).get("segments", [{}])[0].get("duration", 0)
+
+    # Base score calculation based on distance and duration
+    score = math.log1p(distance) + math.log1p(duration)
+
+    # Get starting coordinate for weather check
+    coordinates = route.get("geometry", {}).get("coordinates", [])
+    if not coordinates:
+        return score  # Return base score if no coordinates available
+
+    start_lon, start_lat = coordinates[0]
+
+    # Fetch real-time weather data
+    weather_api_key = os.getenv('OPENWEATHER_API_KEY')
+    if not weather_api_key:
+        return score  # Return base score if API key is not configured
+
+    weather_url = f"https://api.openweathermap.org/data/2.5/weather?lat={start_lat}&lon={start_lon}&appid={weather_api_key}"
+    try:
+        weather_response = requests.get(weather_url)
+        weather_response.raise_for_status()
+        weather_data = weather_response.json()
+        weather_main = weather_data.get("weather", [{}])[0].get("main", "")
+
+        # Apply penalties for adverse weather conditions
+        if weather_main in ["Rain", "Drizzle", "Thunderstorm", "Fog"]:
+            score *= 1.5  # Increase score by 50% for risky weather
+    except Exception as e:
+        pass  # Ignore weather API errors and use base score
+
+    return score
 
 # --- Autocomplete Endpoint ---
 @app.route('/api/autocomplete', methods=['GET'])
@@ -75,18 +112,19 @@ def get_route():
         response = requests.post(ors_url, json=body, headers=headers)
         response.raise_for_status()
         data = response.json()
-        
+
         features = data.get("features", [])
         if not features:
             return jsonify({"error": "No routes found"}), 500
 
-        route_objects, risk_scores = [], [0.3, 0.6, 0.8]
-        for i, feature in enumerate(features):
+        route_objects = []
+        for feature in features:
             coords = feature.get("geometry", {}).get("coordinates", [])
             if coords:
+                risk_score = calculate_risk_score(feature)
                 route_objects.append({
                     "polyline": encode_polyline(coords),
-                    "risk_score": risk_scores[i] if i < len(risk_scores) else 1.0
+                    "risk_score": risk_score
                 })
         return jsonify({"routes": route_objects})
     except requests.exceptions.RequestException as e:
