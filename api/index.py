@@ -6,72 +6,75 @@ from dotenv import load_dotenv
 load_dotenv()
 app = Flask(__name__)
 
-# This is the standard polyline encoding algorithm
+# --- Helper Functions ---
 def encode_polyline(coords):
     result = []
-    prev_lat = 0
-    prev_lng = 0
+    prev_lat, prev_lng = 0, 0
     for lon, lat in coords:
-        lat_e5 = int(round(lat * 1e5))
-        lng_e5 = int(round(lon * 1e5))
-        d_lat = lat_e5 - prev_lat
-        d_lng = lng_e5 - prev_lng
-        for value in (d_lat, d_lng):
-            v = ~(value << 1) if value < 0 else (value << 1)
+        lat_e5, lng_e5 = int(round(lat * 1e5)), int(round(lon * 1e5))
+        d_lat, d_lng = lat_e5 - prev_lat, lng_e5 - prev_lng
+        for v in (d_lat, d_lng):
+            v = ~(v << 1) if v < 0 else (v << 1)
             while v >= 0x20:
                 result.append(chr((0x20 | (v & 0x1f)) + 63))
                 v >>= 5
             result.append(chr(v + 63))
-        prev_lat = lat_e5
-        prev_lng = lng_e5
+        prev_lat, prev_lng = lat_e5, lng_e5
     return "".join(result)
+
+# --- API Endpoints ---
+@app.route('/api/autocomplete', methods=['GET'])
+def autocomplete():
+    user_input = request.args.get('input')
+    if not user_input:
+        return jsonify({"error": "Missing input parameter"}), 400
+
+    api_key = os.getenv('GOOGLE_MAPS_API_KEY')
+    if not api_key:
+        return jsonify({"error": "Google Maps API key not configured"}), 500
+
+    google_places_url = (
+        f"https://maps.googleapis.com/maps/api/place/autocomplete/json"
+        f"?input={user_input}&components=country:IN&key={api_key}"
+    )
+
+    try:
+        response = requests.get(google_places_url)
+        response.raise_for_status()
+        data = response.json()
+        predictions = data.get("predictions", [])
+        descriptions = [p.get("description", "") for p in predictions]
+        # THIS IS THE FIX: Return a direct list (JSON Array)
+        return jsonify(descriptions)
+    except Exception as e:
+        return jsonify({"error": f"Autocomplete failed: {e}"}), 500
+
 
 @app.route('/api/route', methods=['GET'])
 def get_route():
     try:
-        start_lon = request.args.get('start_lon')
-        start_lat = request.args.get('start_lat')
-        end_lon = request.args.get('end_lon')
-        end_lat = request.args.get('end_lat')
-
-        if not all([start_lon, start_lat, end_lon, end_lat]):
-            return jsonify({"error": "Missing required coordinates"}), 400
+        start_lon, start_lat = float(request.args.get('start_lon')), float(request.args.get('start_lat'))
+        end_lon, end_lat = float(request.args.get('end_lon')), float(request.args.get('end_lat'))
         
-        # Robust coordinate validation for India
-        try:
-            start_lat_f = float(start_lat)
-            start_lon_f = float(start_lon)
-            end_lat_f = float(end_lat)
-            end_lon_f = float(end_lon)
-        except Exception:
-            return jsonify({"error": "Invalid coordinate format"}), 400
-
-        if not (8 <= start_lat_f <= 37 and 8 <= end_lat_f <= 37 and 68 <= start_lon_f <= 97 and 68 <= end_lon_f <= 97):
-            return jsonify({"error": "Coordinates are outside of the supported region."}), 400
-
-        coordinates = [[float(start_lon), float(start_lat)], [float(end_lon), float(end_lat)]]
-    except (TypeError, ValueError):
-        return jsonify({"error": "Invalid coordinate format"}), 400
+        # THIS IS THE FIX: More robust validation
+        if not (8 <= start_lat <= 37 and 68 <= start_lon <= 97) or \
+           not (8 <= end_lat <= 37 and 68 <= end_lon <= 97):
+            return jsonify({"error": "Coordinates are outside of the supported region (India)."}), 400
+            
+        coordinates = [[start_lon, start_lat], [end_lon, end_lat]]
+    except (TypeError, ValueError, AttributeError):
+        return jsonify({"error": "Invalid or missing coordinate format"}), 400
 
     api_key = os.getenv('ORS_API_KEY')
     if not api_key:
-        return jsonify({"error": "API key not configured on the server"}), 500
+        return jsonify({"error": "ORS API key not configured"}), 500
 
     headers = {
         'Authorization': api_key,
         'Accept': 'application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8',
         'Content-Type': 'application/json; charset=utf-8'
     }
-    
-    # --- THIS IS THE FIX: We add the 'alternative_routes' parameter to the body ---
-    body = {
-        "coordinates": coordinates,
-        "alternative_routes": {
-            "target_count": 3
-        }
-    }
-    
-    # We use the main GeoJSON endpoint, which is the most robust
+    body = {"coordinates": coordinates, "alternative_routes": {"target_count": 3}}
     ors_url = "https://api.openrouteservice.org/v2/directions/driving-car/geojson"
 
     try:
@@ -81,60 +84,22 @@ def get_route():
         
         features = data.get("features", [])
         if not features:
-            return jsonify({"error": "No routes found in the response"}), 500
+            return jsonify({"error": "No routes found in the response from routing service"}), 500
 
-        route_objects = []
-        risk_scores = [0.3, 0.6, 0.8] # Our hardcoded risk scores
-
+        route_objects, risk_scores = [], [0.3, 0.6, 0.8]
         for i, feature in enumerate(features):
             coords = feature.get("geometry", {}).get("coordinates", [])
-            if not coords:
-                continue
-
-            polyline = encode_polyline(coords)
-            route_objects.append({
-                "polyline": polyline,
-                "risk_score": risk_scores[i] if i < len(risk_scores) else 1.0
-            })
+            if coords:
+                route_objects.append({
+                    "polyline": encode_polyline(coords),
+                    "risk_score": risk_scores[i] if i < len(risk_scores) else 1.0
+                })
 
         return jsonify({"routes": route_objects})
-
-    except requests.exceptions.RequestException as e:
-        return jsonify({"error": f"API request failed: {e}"}), 502
+    except requests.exceptions.HTTPError as e:
+        return jsonify({"error": f"Routing service returned an error: {e.response.text}"}), 502
     except Exception as e:
-        return jsonify({"error": f"Could not parse response: {e}"}), 500
-
-@app.route('/api/autocomplete', methods=['GET'])
-def autocomplete():
-    try:
-        user_input = request.args.get('input')
-        if not user_input:
-            return jsonify({"error": "Missing required input parameter"}), 400
-
-        api_key = os.getenv('Maps_API_KEY')
-        if not api_key:
-            return jsonify({"error": "Google Maps API key not configured on the server"}), 500
-
-        google_places_url = (
-            f"https://maps.googleapis.com/maps/api/place/autocomplete/json"
-            f"?input={user_input}"
-            f"&components=country:IN"
-            f"&key={api_key}"
-        )
-
-        response = requests.get(google_places_url)
-        response.raise_for_status()
-        data = response.json()
-
-        predictions = data.get("predictions", [])
-        descriptions = [prediction.get("description", "") for prediction in predictions]
-
-        return jsonify(descriptions)
-
-    except requests.exceptions.RequestException as e:
-        return jsonify({"error": f"API request failed: {e}"}), 502
-    except Exception as e:
-        return jsonify({"error": f"Could not process request: {e}"}), 500
+        return jsonify({"error": f"An unexpected error occurred: {e}"}), 500
 
 @app.route('/', methods=['GET'])
 def home():
