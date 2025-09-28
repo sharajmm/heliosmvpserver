@@ -37,6 +37,18 @@ def get_route():
         if not all([start_lon, start_lat, end_lon, end_lat]):
             return jsonify({"error": "Missing required coordinates"}), 400
         
+        # Robust coordinate validation for India
+        try:
+            start_lat_f = float(start_lat)
+            start_lon_f = float(start_lon)
+            end_lat_f = float(end_lat)
+            end_lon_f = float(end_lon)
+        except Exception:
+            return jsonify({"error": "Invalid coordinate format"}), 400
+
+        if not (8 <= start_lat_f <= 37 and 8 <= end_lat_f <= 37 and 68 <= start_lon_f <= 97 and 68 <= end_lon_f <= 97):
+            return jsonify({"error": "Coordinates are outside of the supported region."}), 400
+
         coordinates = [[float(start_lon), float(start_lat)], [float(end_lon), float(end_lat)]]
     except (TypeError, ValueError):
         return jsonify({"error": "Invalid coordinate format"}), 400
@@ -117,7 +129,7 @@ def autocomplete():
         predictions = data.get("predictions", [])
         descriptions = [prediction.get("description", "") for prediction in predictions]
 
-        return jsonify({"descriptions": descriptions})
+        return jsonify(descriptions)
 
     except requests.exceptions.RequestException as e:
         return jsonify({"error": f"API request failed: {e}"}), 502
