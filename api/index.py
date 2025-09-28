@@ -23,6 +23,15 @@ def encode_polyline(coords):
         prev_lat, prev_lng = lat_e5, lng_e5
     return "".join(result)
 
+# --- Hazard Zones ---
+HAZARD_ZONES = [
+    (77.5946, 12.9716),  # Example: Bangalore
+    (72.8777, 19.0760),  # Example: Mumbai
+    (88.3639, 22.5726),  # Example: Kolkata
+    (80.2707, 13.0827),  # Example: Chennai
+    (76.9558, 11.0168)   # Example: Coimbatore
+]
+
 # --- Helper Function to Calculate Risk Score ---
 def calculate_risk_score(route):
     # Extract distance and duration from route summary
@@ -56,6 +65,14 @@ def calculate_risk_score(route):
             score *= 1.5  # Increase score by 50% for risky weather
     except Exception as e:
         pass  # Ignore weather API errors and use base score
+
+    # Check for proximity to hazard zones
+    for hazard_lon, hazard_lat in HAZARD_ZONES:
+        for lon, lat in coordinates:
+            distance_to_hazard = math.sqrt((lon - hazard_lon)**2 + (lat - hazard_lat)**2)
+            if distance_to_hazard < 0.05:  # Threshold for proximity (approx. 5km)
+                score *= 2  # Double the score for proximity to hazard zones
+                break
 
     return score
 
@@ -108,7 +125,6 @@ def get_route():
     ors_url = "https://api.openrouteservice.org/v2/directions/driving-car/geojson"
 
     try:
-        # FIX: Using the correct POST method
         response = requests.post(ors_url, json=body, headers=headers)
         response.raise_for_status()
         data = response.json()
@@ -118,14 +134,27 @@ def get_route():
             return jsonify({"error": "No routes found"}), 500
 
         route_objects = []
+        raw_scores = []
         for feature in features:
             coords = feature.get("geometry", {}).get("coordinates", [])
             if coords:
                 risk_score = calculate_risk_score(feature)
+                raw_scores.append(risk_score)
                 route_objects.append({
                     "polyline": encode_polyline(coords),
-                    "risk_score": risk_score
+                    "raw_risk_score": risk_score
                 })
+
+        # Normalize scores to range 1-10
+        if raw_scores:
+            min_score = min(raw_scores)
+            max_score = max(raw_scores)
+            for route in route_objects:
+                raw_score = route["raw_risk_score"]
+                normalized_score = 1 + 9 * ((raw_score - min_score) / (max_score - min_score)) if max_score > min_score else 1
+                route["risk_score"] = round(normalized_score, 2)
+                del route["raw_risk_score"]  # Remove raw score from response
+
         return jsonify({"routes": route_objects})
     except requests.exceptions.RequestException as e:
         return jsonify({"error": f"API request failed: {e.response.text}"}), 502
