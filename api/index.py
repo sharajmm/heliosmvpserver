@@ -92,6 +92,38 @@ def get_route():
     except Exception as e:
         return jsonify({"error": f"Could not parse response: {e}"}), 500
 
+@app.route('/api/autocomplete', methods=['GET'])
+def autocomplete():
+    try:
+        user_input = request.args.get('input')
+        if not user_input:
+            return jsonify({"error": "Missing required input parameter"}), 400
+
+        api_key = os.getenv('Maps_API_KEY')
+        if not api_key:
+            return jsonify({"error": "Google Maps API key not configured on the server"}), 500
+
+        google_places_url = (
+            f"https://maps.googleapis.com/maps/api/place/autocomplete/json"
+            f"?input={user_input}"
+            f"&components=country:IN"
+            f"&key={api_key}"
+        )
+
+        response = requests.get(google_places_url)
+        response.raise_for_status()
+        data = response.json()
+
+        predictions = data.get("predictions", [])
+        descriptions = [prediction.get("description", "") for prediction in predictions]
+
+        return jsonify({"descriptions": descriptions})
+
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"API request failed: {e}"}), 502
+    except Exception as e:
+        return jsonify({"error": f"Could not process request: {e}"}), 500
+
 @app.route('/', methods=['GET'])
 def home():
     return jsonify({'status': 'healthy', 'message': 'Helios Backend is live!'})
